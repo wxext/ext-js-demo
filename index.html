@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+
+<html lang="en" xmlns="http://www.w3.org/1999/xhtml">
+
+<head>
+    <meta charset="utf-8" />
+    <title>jsext</title>
+    <style>
+        html,
+        body {
+            height: 100%;
+            width: 100%;
+            margin: 0;
+            padding: 0;
+        }
+
+        #log {
+            height: 70%;
+            overflow: scroll;
+        }
+
+        #txt {
+            height: 150px;
+            width: 600px;
+        }
+    </style>
+</head>
+
+<body>
+    <div>
+        <textarea id="txt">
+            {
+                "method": "run",
+                "msg": "启动一个新微信",
+                "pid": -1
+            }
+        </textarea>
+    </div>
+    <input type="button" onclick="sendmsg()" value="发送" />
+    <input type="button" onclick="init()" value="连接ws" />
+    <input type="button" onclick="del()" value="清空" />
+    <input type="button" onclick="demo()" value="微信列表" /><br /><br />
+    <div id="error"></div>
+    <pre id="log"></pre>
+    <script>
+        const app = {}
+            , sleep = delay => new Promise(resolve => setTimeout(resolve, delay));
+        let key = /key=([A-Z0-9]{40})/.exec(location.search)
+        if (key) {
+            window.setuserkey = key[1]
+            localStorage.setItem('userkey', setuserkey)
+        }
+        key = localStorage.getItem('userkey')
+        var txtmsg = document.getElementById('txt');
+        var logger = document.getElementById('log');
+        var error = document.getElementById('error');
+        console.log = function (message) {
+            let time = new Date().toLocaleTimeString() + ':'
+            if (typeof message == 'object') {
+                logger.innerText = time + JSON.stringify(message) + '\n' + logger.innerText
+            } else {
+                logger.innerText = time + message + '\n' + logger.innerText
+            }
+            error.innerHTML = ''
+        }
+        console.error = function (message) {
+            error.innerHTML = message
+        }
+        async function sendmsg() {
+            var r = ''
+            try {
+                var obj = JSON.parse(txtmsg.value)
+                r = await Send(obj)//复读吧
+            } catch (error) {
+                r = error.message
+            }
+            console.log('发送结果:' + JSON.stringify(r))
+
+        }
+        function del() {
+            logger.innerHTML = ''
+        }
+        function demo() {
+            window.open('/?route=/app/demo.html?key=' + webkey)
+        }
+        function home() {
+            window.open('/?route=/home/i.html?key=' + webkey)
+        }
+        async function init() {
+            await getKey()
+            if (app.key) RunApp()
+        }
+        async function getKey() {
+            try {
+                let o = await fetch('key.ini')
+                o = await o.json();
+                app.key = o.key
+                app.name = o.name
+            } catch (error) {
+                console.error(apptip + '获取key失败,请启动应用,如无应用请先到应用中心搜索www应用添加,然后把本文件放在插件www目录下,通过http://127.0.0.1:8203/ext/www/访问')
+            }
+        }
+        getWebKey();
+        let webkey = '', apptip = '<input type="button" onclick="home()" value="应用管理" />'
+        async function getWebKey() {
+            try {
+                let o = await fetch('/api?json={%27method%27:%27setConfig%27}')
+                o = await o.json();
+                webkey = o.config.key
+                await setAnyDown()
+            } catch (error) {
+                console.error(apptip + '获取key失败,请启动服务,然后把本文件放在插件www目录下,通过http://127.0.0.1:8203/ext/www/访问')
+            }
+        }
+        async function setAnyDown() {
+            //{"method":"downrange","flag":0,"data":"00:00-00:00"}
+            let o = await fetch('/api?json={%27method%27:%27downrange%27,%27data%27:%27downrange%27,%27flag%27:0}')
+            o = await o.json();
+            console.log('设置不下载时段:' + JSON.stringify(o))
+        }
+        async function onRequest(obj) {
+            //收到请求
+            return { msg: '收到了' }
+        }
+        async function onMessage(obj) {
+            if (obj.type == 724) {
+                //登录消息,启动插件之后微信才登录进来就会有
+                return sayHello()
+            }
+            if (!obj.data) return console.log('不是消息:' + JSON.stringify(obj))
+            //有人加群，加群type=702 但是没有邀请人id，用群成员信息更新来实现
+            if (obj.type == 701) {
+                for (let user of obj.data.member) {
+                    let r
+                    if (user.new) {
+                        //这是新用户
+                        r = await Send({ method: 'sendText', wxid: obj.data.wxid, msg: `欢迎新伙伴${user.wxid}[${user.nickName}],来自${user.invite}[${user.inviteName2 || user.inviteName}]的邀请` })
+                    } else {
+                        r = await Send({ method: 'sendText', atid: user.wxid, wxid: obj.data.wxid, msg: '来聊聊啊' })
+                    }
+                    console.log('通知结果', r)
+                }
+                return '成员信息更新完毕'
+            }
+            //有人退群
+            if (obj.type == 703) {
+                for (let user of obj.data.member) {
+                    let r = await Send({ method: 'sendText', wxid: obj.data.wxid, msg: `小伙伴${user.wxid}[${user.nickName2 || user.nickName}]离开了我们` })
+                    console.log('通知结果', r)
+                }
+                return '成员退出更新完毕'
+            }
+
+            if (obj.data.utype == 0) console.log('收到好友消息:' + JSON.stringify(obj))
+            else if (obj.data.utype == 1) console.log('收到群聊消息:' + JSON.stringify(obj))
+            else return console.log('收到其他消息:' + JSON.stringify(obj))
+            //处理收到消息的
+            if (obj.data.fromid == obj.myid) {
+                obj.data.fromid = obj.data.toid
+                console.log('收到自己的消息,已转换fromid为toid')
+            }
+            let fd = await FuDuJi(obj)//复读吧
+            console.log('复读结果:' + JSON.stringify(fd))
+        }
+        async function FuDuJi(obj) {
+            //如果是文本消息，则回复文本
+            if (obj.type == 1)
+                return await Send({ method: 'sendText', wxid: obj.data.fromid, msg: obj.data.msg })
+            //如果是图片消息，则回复图片
+            //图片type=3，但是这里是一堆xml,还有缩略图,没有图片路径，所以用xml资源事件来实现{"method":"xmlinfo","type":708,
+            if (obj.type == 708) {
+                await sleep(1000)//等文件保存在本地了才能发出去,保存到电脑上需要时间
+                return await Send({ method: 'sendImage', wxid: obj.data.fromid, img: obj.data.path, imgType: 'file' })
+            }
+            //如果是动态表情，则回复动态表情
+            if (obj.type == 47) {
+                await sleep(1000)//等表情文件保存在本地了才能发出去,保存到电脑上需要时间
+                return await Send({ method: 'sendEmojiForward', wxid: obj.data.fromid, xml: obj.data.msg })
+            }
+            //如果是小程序、文章链接，则回复小程序、文章链接
+            if (obj.type == 49)
+                return await Send({ method: 'sendAppmsgForward', wxid: obj.data.fromid, xml: obj.data.msg })
+
+            return '不复读';
+        }
+        async function sayHello() {
+            let h = await Send({ method: 'sendText', wxid: 'filehelper', msg: '您的私人复读机已上线' })
+            console.log('发送结果:' + JSON.stringify(h))
+        }
+        let ws
+        function RunApp() {
+            const url = `ws://127.0.0.1:8202/wx?name=${app.name}&key=${app.key}`
+            if (ws) ws.close()
+            ws = new WebSocket(url)
+            ws.onopen = function () {
+                console.log('可以开始干饭了');
+                sayHello()
+            }
+            ws.onmessage = async function (e) {
+                try {
+                    let obj = JSON.parse(e.data)
+                    if (obj.req !== undefined) return msgObj.cb(obj)
+                    if (obj.cb !== undefined) {
+                        //cb是服务端请求过来的需要回复,人家等着呢
+                        let cbid = obj.cb, method = obj.method
+                        obj = await onRequest(obj)
+                        obj.cb = cbid
+                        return ws.send(JSON.stringify(obj))
+                    }
+                    onMessage(obj)
+                } catch (error) {
+                    console.error("喵了个咪: '" + error.message + "'");
+                }
+            }
+            ws.onclose = function (e) {
+                //应用中心查看应用  https://www.wxext.cn/home/i.html
+                //应用不存在或信息不正确者或正在运行中[2]或者已停止[4]都会被取消
+                console.error(`被服务端取消了,可能是密钥或者应用状态不对,已有其他连接,请去个人中心查看应用` + apptip);
+            }
+            ws.onerror = function (e) {
+                console.error("连接错误: " + error.toString() + apptip);
+            }
+        }
+
+        const msgObj = {
+            _id: 0
+            , get id() { return msgObj._id > 60000 ? 0 : msgObj._id++ }
+            , callback: {}
+            , cb: function (obj) {
+                if (!msgObj.callback[obj.req]) return
+                clearTimeout(msgObj.callback[obj.req].timeout)
+                msgObj.callback[obj.req].cb.call(null, obj)
+                delete msgObj.callback[obj.req]
+            }
+            , event: console.log
+            , req: console.log
+            , add: function (cb, timeout) {
+                let id = msgObj.id
+                this.callback[id] = {
+                    cb,
+                    timeout: setTimeout(function () {
+                        msgObj.cb({ id, method: 'err', msg: 'timeout' })
+                    }, timeout || 3000)
+                }
+                return id
+            }
+        }
+        function Send(obj, timeout) {
+            return new Promise((resolve, reject) => {
+                if (!obj || !obj.method) return resolve({ method: 'err', msg: 'invalid method' })
+                if (!ws || ws.readyState != 1) return resolve({ method: 'err', msg: '请先点击连接ws' })
+                obj.req = msgObj.add(resolve, timeout)
+                var str = JSON.stringify(obj)
+                console.log('发送消息:' + str)
+                ws.send(str)
+            }).catch(err => console.error('error:' + err))
+        }
+    </script>
+</body>
+
+</html>
